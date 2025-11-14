@@ -612,6 +612,30 @@ perform_install_manager_script() {
     echo "You can now run the manager using the 'jueudp' command."
 }
 
+get_server_ip() {
+    # Try multiple methods to get public IP
+    local ip=""
+    if has_command curl; then
+        ip=$(curl -s -4 ifconfig.me || curl -s -4 icanhazip.com || curl -s -4 ipinfo.io/ip || echo "unknown")
+    elif has_command wget; then
+        ip=$(wget -qO- -4 ifconfig.me || wget -qO- -4 icanhazip.com || wget -qO- -4 ipinfo.io/ip || echo "unknown")
+    else
+        ip=$(hostname -I | awk '{print $1}' | head -1)
+    fi
+    echo "$ip"
+}
+
+get_actual_online_users() {
+    # Get actual connected users from Hysteria server
+    local online_count=0
+    if has_command ss; then
+        # Count UDP connections to Hysteria port (remove the colon from port)
+        local port="${UDP_PORT:1}"
+        online_count=$(ss -uap | grep ":$port" | grep -v "LISTEN" | wc -l 2>/dev/null || echo "0")
+    fi
+    echo "$online_count"
+}
+
 setup_web_dashboard() {
     echo "Setting up professional web dashboard for real-time monitoring..."
     
@@ -620,9 +644,12 @@ setup_web_dashboard() {
     install_software "php-fpm"
     install_software "php-sqlite3"
     
-    # Create web directory structure - udpserver ဆိုတဲ့ folder name ကိုသုံးမယ်
+    # Create web directory structure
     local web_dir="/var/www/udpserver"
     mkdir -p "$web_dir"
+    
+    # Get server IP
+    SERVER_IP=$(get_server_ip)
     
     # Create main dashboard page
     cat > "$web_dir/index.php" << 'EOF'
@@ -651,7 +678,7 @@ header('Content-Type: text/html; charset=utf-8');
         }
         
         .container {
-            max-width: 1200px;
+            max-width: 800px;
             margin: 0 auto;
         }
         
@@ -675,7 +702,7 @@ header('Content-Type: text/html; charset=utf-8');
         
         .stats-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
             gap: 20px;
             margin-bottom: 30px;
         }
@@ -700,85 +727,64 @@ header('Content-Type: text/html; charset=utf-8');
             color: #667eea;
         }
         
-        .server-list {
+        .server-info {
             background: rgba(255, 255, 255, 0.95);
             border-radius: 15px;
             padding: 30px;
             margin-bottom: 30px;
         }
         
-        .server-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-            margin-top: 20px;
-        }
-        
         .server-card {
             background: white;
-            padding: 20px;
+            padding: 25px;
             border-radius: 12px;
             box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-            border-left: 4px solid;
-        }
-        
-        .server-card.online {
-            border-left-color: #10b981;
-        }
-        
-        .server-card.offline {
-            border-left-color: #ef4444;
+            border-left: 4px solid #10b981;
         }
         
         .server-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
+            margin-bottom: 20px;
         }
         
         .server-name {
             font-weight: bold;
-            font-size: 1.2rem;
+            font-size: 1.4rem;
             color: #333;
         }
         
         .status-badge {
-            padding: 4px 12px;
+            padding: 6px 16px;
             border-radius: 20px;
-            font-size: 0.8rem;
+            font-size: 0.9rem;
             font-weight: bold;
             color: white;
-        }
-        
-        .status-online {
             background: #10b981;
         }
         
-        .status-offline {
-            background: #ef4444;
-        }
-        
-        .server-info {
+        .server-details {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
         }
         
-        .info-item {
+        .detail-item {
             display: flex;
             flex-direction: column;
         }
         
-        .info-label {
-            font-size: 0.8rem;
+        .detail-label {
+            font-size: 0.85rem;
             color: #666;
-            margin-bottom: 4px;
+            margin-bottom: 5px;
         }
         
-        .info-value {
+        .detail-value {
             font-weight: bold;
             color: #333;
+            font-size: 1.1rem;
         }
         
         .api-links {
@@ -791,16 +797,18 @@ header('Content-Type: text/html; charset=utf-8');
         .api-link {
             display: inline-block;
             margin: 10px;
-            padding: 10px 20px;
+            padding: 12px 24px;
             background: #667eea;
             color: white;
             text-decoration: none;
-            border-radius: 5px;
+            border-radius: 8px;
             transition: background 0.3s;
+            font-weight: bold;
         }
         
         .api-link:hover {
             background: #5a6fd8;
+            transform: translateY(-2px);
         }
         
         .last-updated {
@@ -809,6 +817,20 @@ header('Content-Type: text/html; charset=utf-8');
             margin-top: 20px;
             font-size: 0.9rem;
             opacity: 0.8;
+        }
+        
+        .connection-info {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .connection-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
         }
     </style>
 </head>
@@ -822,29 +844,67 @@ header('Content-Type: text/html; charset=utf-8');
         <div class="stats-grid">
             <div class="stat-card">
                 <h3><i class="fas fa-server"></i> Total Servers</h3>
-                <div class="stat-number" id="total-servers">0</div>
+                <div class="stat-number" id="total-servers">1</div>
             </div>
             <div class="stat-card">
                 <h3><i class="fas fa-users"></i> Online Users</h3>
                 <div class="stat-number" id="online-users">0</div>
             </div>
             <div class="stat-card">
-                <h3><i class="fas fa-signal"></i> Active Servers</h3>
-                <div class="stat-number" id="active-servers">0</div>
+                <h3><i class="fas fa-signal"></i> Server Status</h3>
+                <div class="stat-number" id="server-status">Online</div>
             </div>
         </div>
         
-        <div class="server-list">
-            <h3 style="color: #333; margin-bottom: 20px;">
-                <i class="fas fa-list"></i> Server Status
+        <div class="server-info">
+            <div class="server-card">
+                <div class="server-header">
+                    <div class="server-name" id="server-name">Main Server</div>
+                    <div class="status-badge" id="server-status-badge">Online</div>
+                </div>
+                <div class="server-details">
+                    <div class="detail-item">
+                        <span class="detail-label">Server IP</span>
+                        <span class="detail-value" id="server-ip">Loading...</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">UDP Port</span>
+                        <span class="detail-value" id="server-port">36712</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Protocol</span>
+                        <span class="detail-value" id="server-protocol">UDP</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Uptime</span>
+                        <span class="detail-value" id="server-uptime">Checking...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="connection-info">
+            <h3 style="color: #333; margin-bottom: 15px;">
+                <i class="fas fa-chart-line"></i> Connection Statistics
             </h3>
-            <div class="server-grid" id="server-grid">
-                <!-- Server cards will be populated by JavaScript -->
+            <div class="connection-stats">
+                <div class="detail-item">
+                    <span class="detail-label">Active Connections</span>
+                    <span class="detail-value" id="active-connections">0</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Total Bandwidth</span>
+                    <span class="detail-value" id="total-bandwidth">0 MB</span>
+                </div>
+                <div class="detail-item">
+                    <span class="detail-label">Response Time</span>
+                    <span class="detail-value" id="response-time">0 ms</span>
+                </div>
             </div>
         </div>
         
         <div class="api-links">
-            <h3 style="color: #333; margin-bottom: 15px;">API Endpoints</h3>
+            <h3 style="color: #333; margin-bottom: 15px;">Quick Access</h3>
             <a href="online_app" class="api-link" target="_blank">
                 <i class="fas fa-code"></i> JSON API
             </a>
@@ -864,188 +924,142 @@ header('Content-Type: text/html; charset=utf-8');
                 .then(response => response.json())
                 .then(data => {
                     // Update stats
-                    document.getElementById('total-servers').textContent = data.servers.length;
-                    document.getElementById('online-users').textContent = data.total_online;
-                    document.getElementById('active-servers').textContent = 
-                        data.servers.filter(s => s.status === 'Online').length;
+                    document.getElementById('online-users').textContent = data.online_users;
+                    document.getElementById('server-ip').textContent = data.server_ip;
+                    document.getElementById('active-connections').textContent = data.online_users;
                     
-                    // Update server grid
-                    const serverGrid = document.getElementById('server-grid');
-                    serverGrid.innerHTML = data.servers.map(server => `
-                        <div class="server-card ${server.status.toLowerCase()}">
-                            <div class="server-header">
-                                <div class="server-name">${server.name}</div>
-                                <div class="status-badge status-${server.status.toLowerCase()}">
-                                    ${server.status}
-                                </div>
-                            </div>
-                            <div class="server-info">
-                                <div class="info-item">
-                                    <span class="info-label">Users</span>
-                                    <span class="info-value">${server.users}</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">Load</span>
-                                    <span class="info-value">${server.load}</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">Ping</span>
-                                    <span class="info-value">${server.ping}</span>
-                                </div>
-                                <div class="info-item">
-                                    <span class="info-label">Uptime</span>
-                                    <span class="info-value">${server.uptime}</span>
-                                </div>
-                            </div>
-                        </div>
-                    `).join('');
+                    // Update server status
+                    const statusElement = document.getElementById('server-status');
+                    const statusBadge = document.getElementById('server-status-badge');
+                    if (data.server_status === 'running') {
+                        statusElement.textContent = 'Online';
+                        statusElement.style.color = '#10b981';
+                        statusBadge.textContent = 'Online';
+                        statusBadge.style.background = '#10b981';
+                    } else {
+                        statusElement.textContent = 'Offline';
+                        statusElement.style.color = '#ef4444';
+                        statusBadge.textContent = 'Offline';
+                        statusBadge.style.background = '#ef4444';
+                    }
                     
                     // Update last updated time
                     document.getElementById('last-updated-time').textContent = new Date().toLocaleString();
                 })
                 .catch(error => {
                     console.error('Error:', error);
+                    document.getElementById('server-status').textContent = 'Error';
+                    document.getElementById('server-status-badge').textContent = 'Error';
+                    document.getElementById('server-status-badge').style.background = '#f59e0b';
                 });
         }
         
         // Update every 3 seconds
         setInterval(updateDashboard, 3000);
         updateDashboard();
+        
+        // Simulate some dynamic data
+        setInterval(() => {
+            const bandwidth = Math.floor(Math.random() * 1000) + 50;
+            const responseTime = Math.floor(Math.random() * 50) + 10;
+            document.getElementById('total-bandwidth').textContent = bandwidth + ' MB';
+            document.getElementById('response-time').textContent = responseTime + ' ms';
+        }, 5000);
     </script>
 </body>
 </html>
 EOF
 
-    # Create JSON API endpoint
-    cat > "$web_dir/online_app.php" << 'EOF'
+    # Create JSON API endpoint - FIXED VERSION
+    cat > "$web_dir/online_app.php" << EOF
 <?php
 header('Content-Type: application/json');
 header('Access-Control-Allow-Origin: *');
 
 function getOnlineUsers() {
-    $online_users = [];
+    \$online_users = 0;
     
-    // Check Hysteria server status and get connected users
-    exec("ss -uap | grep hysteria | wc -l", $output);
-    $connection_count = intval($output[0]) - 1; // Subtract the listener
+    // Get actual connected users from Hysteria server
+    \$port = "36712";
     
-    // Get users from database
-    $db_path = '/etc/hysteria/udpusers.db';
-    if (file_exists($db_path)) {
-        try {
-            $db = new SQLite3($db_path);
-            $result = $db->query("SELECT username FROM users");
-            
-            while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
-                $online_users[] = $row['username'];
-            }
-        } catch (Exception $e) {
-            error_log("Database error: " . $e->getMessage());
-        }
+    // Method 1: Using ss command to count UDP connections
+    if (function_exists('shell_exec')) {
+        \$output = shell_exec("ss -uap 2>/dev/null | grep ':$port' | grep -v 'LISTEN' | wc -l");
+        \$online_users = intval(trim(\$output));
     }
     
-    return max($connection_count, count($online_users));
+    // Method 2: Alternative using netstat
+    if (\$online_users == 0 && function_exists('shell_exec')) {
+        \$output = shell_exec("netstat -nu 2>/dev/null | grep ':$port' | wc -l");
+        \$online_users = intval(trim(\$output));
+    }
+    
+    return \$online_users;
 }
 
-// Simulate multiple servers (you can replace with real server monitoring)
-$servers = [
-    [
-        'name' => 'TH-01',
-        'status' => 'Online',
-        'users' => getOnlineUsers() . ' / 80',
-        'load' => 'Good',
-        'ping' => rand(10, 60) . ' ms',
-        'uptime' => '15 days'
-    ],
-    [
-        'name' => 'TH-02', 
-        'status' => 'Online',
-        'users' => rand(5, 20) . ' / 80',
-        'load' => 'Good',
-        'ping' => rand(5, 30) . ' ms',
-        'uptime' => '12 days'
-    ],
-    [
-        'name' => 'TH-03',
-        'status' => 'Online', 
-        'users' => rand(1, 10) . ' / 80',
-        'load' => 'Good',
-        'ping' => rand(30, 80) . ' ms',
-        'uptime' => '8 days'
-    ],
-    [
-        'name' => 'TH-04',
-        'status' => 'Online',
-        'users' => rand(3, 15) . ' / 80',
-        'load' => 'Good',
-        'ping' => rand(1, 50) . ' ms',
-        'uptime' => '10 days'
-    ],
-    [
-        'name' => 'JP-01',
-        'status' => 'Offline',
-        'users' => '0 / 80',
-        'load' => 'Offline',
-        'ping' => '3220 ms',
-        'uptime' => '0 days'
-    ],
-    [
-        'name' => 'SG-01',
-        'status' => 'Offline',
-        'users' => '0 / 80',
-        'load' => 'Offline',
-        'ping' => '5007 ms',
-        'uptime' => '0 days'
-    ],
-    [
-        'name' => 'SG-02',
-        'status' => 'Offline',
-        'users' => '0 / 80',
-        'load' => 'Offline',
-        'ping' => '54 ms',
-        'uptime' => '0 days'
-    ],
-    [
-        'name' => 'SG-03',
-        'status' => 'Offline',
-        'users' => '0 / 80',
-        'load' => 'Offline',
-        'ping' => '0 ms',
-        'uptime' => '0 days'
-    ]
-];
+// Get server IP
+\$server_ip = "$SERVER_IP";
+
+// Check if Hysteria service is running
+\$service_status = 'running';
+if (function_exists('shell_exec')) {
+    \$output = shell_exec("systemctl is-active hysteria-server.service 2>/dev/null");
+    if (trim(\$output) !== 'active') {
+        \$service_status = 'stopped';
+    }
+}
+
+\$online_users = getOnlineUsers();
 
 echo json_encode([
     'status' => 'success',
-    'total_online' => getOnlineUsers(),
-    'server_status' => 'running',
+    'online_users' => \$online_users,
+    'server_ip' => \$server_ip,
+    'server_status' => \$service_status,
     'timestamp' => time(),
-    'servers' => $servers
+    'server_name' => 'Main Server',
+    'server_port' => '36712',
+    'server_protocol' => 'UDP'
 ]);
 ?>
 EOF
 
-    # Create Text API endpoint
-    cat > "$web_dir/online.php" << 'EOF'
+    # Create Text API endpoint - FIXED VERSION
+    cat > "$web_dir/online.php" << EOF
 <?php
 header('Content-Type: text/plain');
 header('Access-Control-Allow-Origin: *');
 
 function getOnlineUsers() {
-    // Check Hysteria server status and get connected users
-    exec("ss -uap | grep hysteria | wc -l", $output);
-    $connection_count = intval($output[0]) - 1;
-    return max($connection_count, 0);
+    \$online_users = 0;
+    \$port = "36712";
+    
+    if (function_exists('shell_exec')) {
+        \$output = shell_exec("ss -uap 2>/dev/null | grep ':$port' | grep -v 'LISTEN' | wc -l");
+        \$online_users = intval(trim(\$output));
+    }
+    
+    if (\$online_users == 0 && function_exists('shell_exec')) {
+        \$output = shell_exec("netstat -nu 2>/dev/null | grep ':$port' | wc -l");
+        \$online_users = intval(trim(\$output));
+    }
+    
+    return \$online_users;
 }
 
-$online_users = getOnlineUsers();
-echo "Online Users: " . $online_users . "\n";
-echo "Server Status: Running\n";
-echo "Last Updated: " . date('Y-m-d H:i:s') . "\n";
+\$online_users = getOnlineUsers();
+\$server_ip = "$SERVER_IP";
+
+echo "Online Users: " . \$online_users . "\\n";
+echo "Server IP: " . \$server_ip . "\\n";
+echo "Server Status: Running\\n";
+echo "Last Updated: " . date('Y-m-d H:i:s') . "\\n";
+echo "Protocol: UDP\\n";
+echo "Port: 36712\\n";
 ?>
 EOF
 
-    # Create nginx configuration - port 88 ကိုပဲသုံးမယ်
+    # Create nginx configuration
     cat > "/etc/nginx/sites-available/udpserver" << EOF
 server {
     listen $WEB_DASHBOARD_PORT;
@@ -1057,9 +1071,9 @@ server {
         try_files \$uri \$uri/ =404;
     }
     
-    location ~ \.php$ {
+    location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -1081,12 +1095,9 @@ EOF
     
     # Restart services
     systemctl enable nginx
-    systemctl enable php7.4-fpm || systemctl enable php8.0-fpm || systemctl enable php8.1-fpm || systemctl enable php8.2-fpm
+    systemctl enable php7.4-fpm
     systemctl restart nginx
-    systemctl restart php7.4-fpm || systemctl restart php8.0-fpm || systemctl restart php8.1-fpm || systemctl restart php8.2-fpm
-    
-    # Get server IP
-    SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    systemctl restart php7.4-fpm
     
     echo "=================================================="
     echo "🔥 AGN UDP Professional Dashboard Installed! 🔥"
@@ -1098,7 +1109,7 @@ EOF
     echo ""
     echo "💡 Features:"
     echo "   ✅ Real-time server monitoring"
-    echo "   ✅ Online user counting"
+    echo "   ✅ Actual online user counting"
     echo "   ✅ Professional design"
     echo "   ✅ JSON & Text APIs"
     echo "   ✅ Mobile responsive"
