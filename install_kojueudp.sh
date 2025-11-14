@@ -1,3 +1,20 @@
+[file name]: 1000108318.jpg
+[file content begin]
+# Total Servers
+
+## Server Status
+- **Uptime**
+- **Main Server**  
+  Server IP  
+   199.21.174.175  
+  UDP Port  
+   36712  
+  Protocol  
+  UDP  
+
+
+[file content end]
+
 #!/usr/bin/env bash
 #
 # Try `install_jueudp.sh --help` for usage.
@@ -691,8 +708,8 @@ create_service_status_checker() {
 check_hysteria_status() {
     local status="unknown"
     
-    # Method 1: Check if process is running
-    if pgrep -x "hysteria" > /dev/null; then
+    # Method 1: Check if process is running with correct process name
+    if pgrep -f "hysteria server" > /dev/null; then
         status="running"
     else
         # Method 2: Check systemd service
@@ -1235,9 +1252,9 @@ function getServerStatus() {
         }
     }
     
-    // Fallback method: Check if process is running
+    // Fallback method: Check if process is running with correct name
     if (function_exists('shell_exec')) {
-        $process_check = shell_exec("pgrep hysteria 2>/dev/null | wc -l");
+        $process_check = shell_exec("pgrep -f 'hysteria server' 2>/dev/null | wc -l");
         if (intval(trim($process_check)) > 0) {
             return 'running';
         }
@@ -1257,7 +1274,7 @@ function getServerStatus() {
 function getServerUptime() {
     if (function_exists('shell_exec')) {
         // Try to get process start time
-        $pid_output = shell_exec("pgrep hysteria 2>/dev/null");
+        $pid_output = shell_exec("pgrep -f 'hysteria server' 2>/dev/null");
         $pid = trim($pid_output);
         
         if (!empty($pid)) {
@@ -1361,9 +1378,9 @@ function getServerStatus() {
         }
     }
     
-    // Fallback: Check process
+    // Fallback: Check process with correct name
     if (function_exists('shell_exec')) {
-        $process_check = shell_exec("pgrep hysteria 2>/dev/null | wc -l");
+        $process_check = shell_exec("pgrep -f 'hysteria server' 2>/dev/null | wc -l");
         if (intval(trim($process_check)) > 0) {
             return 'Running';
         }
@@ -1472,7 +1489,7 @@ EOF
     echo "   ✅ Professional design with live updates"
     echo ""
     echo "🔍 Status Checking Methods:"
-    echo "   1. Process checking (pgrep)"
+    echo "   1. Process checking (pgrep -f 'hysteria server')"
     echo "   2. Systemd service status"
     echo "   3. Port listening check"
     echo "   4. Direct process verification"
@@ -1632,7 +1649,7 @@ net.ipv4.conf.$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head
         echo "✅ Hysteria server started successfully"
     else
         echo "⚠️  Hysteria server might not be running, checking process..."
-        if pgrep hysteria > /dev/null; then
+        if pgrep -f "hysteria server" > /dev/null; then
             echo "✅ Hysteria process is running"
         else
             echo "❌ Hysteria service failed to start, please check logs"
