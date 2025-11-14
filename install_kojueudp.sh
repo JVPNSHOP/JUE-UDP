@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
-# Optimized AGN-UDP (Hysteria) installer — zIVPN-style fast path
-# (c) 2023 Jue Htet | edited for performance by ChatGPT
+#
+# Try `install_jueudp.sh --help` for usage.
+#
+# (c) 2023 Jue Htet
+#
 
 set -e
 
-# ===== User Vars =====
+# Domain Name
 DOMAIN="eg.jueudp.com"
+# PROTOCOL
 PROTOCOL="udp"
-UDP_PORT=":36712"         # final listen port (e.g. :36712)
+# UDP PORT
+UDP_PORT=":36712"
+# OBFS
 OBFS="jaideevpn"
+# PASSWORDS
 PASSWORD="jaideevpn"
+# Web Dashboard Port
+WEB_DASHBOARD_PORT="88"
 
-# ===== Paths =====
+# Script paths
 SCRIPT_NAME="$(basename "$0")"
 SCRIPT_ARGS=("$@")
 EXECUTABLE_INSTALL_PATH="/usr/local/bin/hysteria"
@@ -24,9 +33,11 @@ API_BASE_URL="https://api.github.com/repos/apernet/hysteria"
 CURL_FLAGS=(-L -f -q --retry 5 --retry-delay 10 --retry-max-time 60)
 PACKAGE_MANAGEMENT_INSTALL="${PACKAGE_MANAGEMENT_INSTALL:-}"
 SYSTEMD_SERVICE="$SYSTEMD_SERVICES_DIR/hysteria-server.service"
-mkdir -p "$CONFIG_DIR"; touch "$USER_DB"
 
-# ===== Other Configs =====
+mkdir -p "$CONFIG_DIR"
+touch "$USER_DB"
+
+# Other configurations
 OPERATING_SYSTEM=""
 ARCHITECTURE=""
 HYSTERIA_USER=""
@@ -37,128 +48,393 @@ LOCAL_FILE=""
 FORCE_NO_ROOT=""
 FORCE_NO_SYSTEMD=""
 
-# ===== Utils =====
-has_command(){ type -P "$1" >/dev/null 2>&1; }
-curl(){ command curl "${CURL_FLAGS[@]}" "$@"; }
-mktemp(){ command mktemp "$@" "hyservinst.XXXXXXXXXX"; }
-tput(){ has_command tput && command tput "$@" || true; }
-tred(){ tput setaf 1; }
-tyellow(){ tput setaf 3; }
-tblue(){ tput setaf 4; }
-tbold(){ tput bold; }
-treset(){ tput sgr0; }
-note(){ echo -e "$SCRIPT_NAME: $(tbold)note: $1$(treset)"; }
-warning(){ echo -e "$SCRIPT_NAME: $(tyellow)warning: $1$(treset)"; }
-error(){ echo -e "$SCRIPT_NAME: $(tred)error: $1$(treset)"; }
-show_argument_error_and_exit(){ error "$1"; echo "Try \"$0 --help\" for the usage." >&2; exit 22; }
-install_content(){ local f="$1" c="$2" d="$3"; local tmp="$(mktemp)"; echo -ne "Install $d ... "; echo "$c" > "$tmp"; install "$f" "$tmp" "$d" && echo "ok"; rm -f "$tmp"; }
-remove_file(){ echo -ne "Remove $1 ... "; rm "$1" && echo "ok"; }
-exec_sudo(){
-  local _saved_ifs="$IFS"; IFS=$'\n'
-  local _preserved_env=($(env | grep -E '^(PACKAGE_MANAGEMENT_INSTALL|OPERATING_SYSTEM|ARCHITECTURE|HYSTERIA_.*|FORCE_.*)=' || true))
-  IFS="$_saved_ifs"
-  exec sudo env "${_preserved_env[@]}" "$@"
-}
-install_software(){
-  local p="$1"
-  if has_command apt-get; then apt-get update && apt-get install -y "$p"
-  elif has_command dnf; then dnf install -y "$p"
-  elif has_command yum; then yum install -y "$p"
-  elif has_command zypper; then zypper install -y "$p"
-  elif has_command pacman; then pacman -Sy --noconfirm "$p"
-  else echo "Error: No supported package manager found. Please install $p manually."; exit 1; fi
-}
-is_user_exists(){ id "$1" >/dev/null 2>&1; }
-
-check_permission(){
-  if [[ "$UID" -eq 0 ]]; then return; fi
-  note "Current user is not root."
-  case "$FORCE_NO_ROOT" in
-    1) warning "FORCE_NO_ROOT=1 set — proceeding without root."; ;;
-    *) if has_command sudo; then note "Re-running with sudo…"; exec_sudo "$0" "${SCRIPT_ARGS[@]}"; else error "Run as root or set FORCE_NO_ROOT=1"; exit 13; fi ;;
-  esac
-}
-check_environment_operating_system(){
-  [[ -n "$OPERATING_SYSTEM" ]] && { warning "OPERATING_SYSTEM preset: $OPERATING_SYSTEM"; return; }
-  if [[ "x$(uname)" == "xLinux" ]]; then OPERATING_SYSTEM=linux; return; fi
-  error "Linux only."; exit 95
-}
-check_environment_architecture(){
-  [[ -n "$ARCHITECTURE" ]] && { warning "ARCHITECTURE preset: $ARCHITECTURE"; return; }
-  case "$(uname -m)" in
-    i386|i686) ARCHITECTURE=386;;
-    amd64|x86_64) ARCHITECTURE=amd64;;
-    armv5tel|armv6l|armv7|armv7l) ARCHITECTURE=arm;;
-    armv8|aarch64) ARCHITECTURE=arm64;;
-    mips|mipsle|mips64|mips64le) ARCHITECTURE=mipsle;;
-    s390x) ARCHITECTURE=s390x;;
-    *) error "Unsupported arch $(uname -a)"; exit 8;;
-  esac
-}
-check_environment_systemd(){
-  if [[ -d /run/systemd/system ]] || grep -q systemd <(ls -l /sbin/init); then return; fi
-  case "$FORCE_NO_SYSTEMD" in
-    1) warning "FORCE_NO_SYSTEMD=1 — continue anyway."; ;;
-    2) warning "FORCE_NO_SYSTEMD=2 — systemd commands will be skipped."; ;;
-    *) error "This script requires systemd."; exit 1;;
-  esac
-}
-parse_arguments(){
-  while [[ "$#" -gt 0 ]]; do
-    case "$1" in
-      --remove) [[ -n "$OPERATION" && "$OPERATION" != remove ]] && show_argument_error_and_exit "Conflicted option"; OPERATION=remove;;
-      --version) VERSION="$2"; [[ -z "$VERSION" ]] && show_argument_error_and_exit "Missing version"; shift; [[ "$VERSION" == v* ]] || show_argument_error_and_exit "Version must start with v";;
-      -h|--help) show_usage_and_exit;;
-      -l|--local) LOCAL_FILE="$2"; [[ -z "$LOCAL_FILE" ]] && show_argument_error_and_exit "Missing file for --local"; break;;
-      *) show_argument_error_and_exit "Unknown option '$1'";;
-    esac; shift
-  done
-  [[ -z "$OPERATION" ]] && OPERATION=install
-  case "$OPERATION" in
-    install) [[ -n "$VERSION" && -n "$LOCAL_FILE" ]] && show_argument_error_and_exit "--version and --local cannot be together.";;
-    *) [[ -n "$VERSION" ]] && show_argument_error_and_exit "--version only for install."; [[ -n "$LOCAL_FILE" ]] && show_argument_error_and_exit "--local only for install.";;
-  esac
-}
-check_hysteria_homedir(){ local d="$1"; [[ -n "$HYSTERIA_HOME_DIR" ]] && return; is_user_exists "$HYSTERIA_USER" || { HYSTERIA_HOME_DIR="$d"; return; }; HYSTERIA_HOME_DIR="$(eval echo ~"$HYSTERIA_USER")"; }
-
-download_hysteria(){
-  local _v="$1" _dst="$2"
-  local _url="$REPO_URL/releases/download/v1.3.5/hysteria-$OPERATING_SYSTEM-$ARCHITECTURE"
-  echo "Downloading hysteria: $_url ..."
-  curl -R -H 'Cache-Control: no-cache' "$_url" -o "$_dst" || return 11
-  return 0
-}
-check_hysteria_user(){ local def="$1"; [[ -n "$HYSTERIA_USER" ]] && return; [[ ! -e "$SYSTEMD_SERVICES_DIR/hysteria-server.service" ]] && { HYSTERIA_USER="$def"; return; }
-  HYSTERIA_USER="$(grep -o '^User=\w*' "$SYSTEMD_SERVICES_DIR/hysteria-server.service" | tail -1 | cut -d '=' -f 2 || true)"
-  [[ -z "$HYSTERIA_USER" ]] && HYSTERIA_USER="$def"
-}
-check_environment_curl(){ has_command curl || install_software curl; }
-check_environment_grep(){ has_command grep || install_software grep; }
-check_environment_sqlite3(){ has_command sqlite3 || install_software sqlite3; }
-check_environment_pip(){ has_command pip || install_software pip; }
-check_environment_jq(){ has_command jq || install_software jq; }
-check_environment(){
-  check_environment_operating_system
-  check_environment_architecture
-  check_environment_systemd
-  check_environment_curl
-  check_environment_grep
-  check_environment_pip
-  check_environment_sqlite3
-  check_environment_jq
-}
-show_usage_and_exit(){
-  echo
-  echo -e "\t$(tbold)$SCRIPT_NAME$(treset) - AGN-UDP server install script (optimized)"
-  echo
-  echo -e "Install:   $0 [ -l <file> | --version <version> ]"
-  echo -e "Remove:    $0 --remove"
-  echo -e "Optional:  USE_NOTRACK=1 $0  (skip conntrack for hysteria port)"
-  exit 0
+# Utility functions
+has_command() {
+    local _command=$1
+    type -P "$_command" > /dev/null 2>&1
 }
 
-tpl_hysteria_server_service_base(){
-cat << EOF
+curl() {
+    command curl "${CURL_FLAGS[@]}" "$@"
+}
+
+mktemp() {
+    command mktemp "$@" "hyservinst.XXXXXXXXXX"
+}
+
+tput() {
+    if has_command tput; then
+        command tput "$@"
+    fi
+}
+
+tred() {
+    tput setaf 1
+}
+
+tgreen() {
+    tput setaf 2
+}
+
+tyellow() {
+    tput setaf 3
+}
+
+tblue() {
+    tput setaf 4
+}
+
+taoi() {
+    tput setaf 6
+}
+
+tbold() {
+    tput bold
+}
+
+treset() {
+    tput sgr0
+}
+
+note() {
+    local _msg="$1"
+    echo -e "$SCRIPT_NAME: $(tbold)note: $_msg$(treset)"
+}
+
+warning() {
+    local _msg="$1"
+    echo -e "$SCRIPT_NAME: $(tyellow)warning: $_msg$(treset)"
+}
+
+error() {
+    local _msg="$1"
+    echo -e "$SCRIPT_NAME: $(tred)error: $_msg$(treset)"
+}
+
+show_argument_error_and_exit() {
+    local _error_msg="$1"
+    error "$_error_msg"
+    echo "Try \"$0 --help\" for the usage." >&2
+    exit 22
+}
+
+install_content() {
+    local _install_flags="$1"
+    local _content="$2"
+    local _destination="$3"
+    local _tmpfile="$(mktemp)"
+    echo -ne "Install $_destination ... "
+    echo "$_content" > "$_tmpfile"
+    if install "$_install_flags" "$_tmpfile" "$_destination"; then
+        echo -e "ok"
+    fi
+    rm -f "$_tmpfile"
+}
+
+remove_file() {
+    local _target="$1"
+    echo -ne "Remove $_target ... "
+    if rm "$_target"; then
+        echo -e "ok"
+    fi
+}
+
+exec_sudo() {
+    local _saved_ifs="$IFS"
+    IFS=$'\n'
+    local _preserved_env=(
+        $(env | grep "^PACKAGE_MANAGEMENT_INSTALL=" || true)
+        $(env | grep "^OPERATING_SYSTEM=" || true)
+        $(env | grep "^ARCHITECTURE=" || true)
+        $(env | grep "^HYSTERIA_\w*=" || true)
+        $(env | grep "^FORCE_\w*=" || true)
+    )
+    IFS="$_saved_ifs"
+    exec sudo env \
+        "${_preserved_env[@]}" \
+        "$@"
+}
+
+install_software() {
+    local package="$1"
+    if has_command apt-get; then
+        echo "Installing $package using apt-get..."
+        apt-get update && apt-get install -y "$package"
+    elif has_command dnf; then
+        echo "Installing $package using dnf..."
+        dnf install -y "$package"
+    elif has_command yum; then
+        echo "Installing $package using yum..."
+        yum install -y "$package"
+    elif has_command zypper; then
+        echo "Installing $package using zypper..."
+        zypper install -y "$package"
+    elif has_command pacman; then
+        echo "Installing $package using pacman..."
+        pacman -Sy --noconfirm "$package"
+    else
+        echo "Error: No supported package manager found. Please install $package manually."
+        exit 1
+    fi
+}
+
+is_user_exists() {
+    local _user="$1"
+    id "$_user" > /dev/null 2>&1
+}
+
+check_permission() {
+    if [[ "$UID" -eq '0' ]]; then
+        return
+    fi
+    note "The user currently executing this script is not root."
+    case "$FORCE_NO_ROOT" in
+        '1')
+            warning "FORCE_NO_ROOT=1 is specified, we will process without root and you may encounter the insufficient privilege error."
+            ;;
+        *)
+            if has_command sudo; then
+                note "Re-running this script with sudo, you can also specify FORCE_NO_ROOT=1 to force this script running with current user."
+                exec_sudo "$0" "${SCRIPT_ARGS[@]}"
+            else
+                error "Please run this script with root or specify FORCE_NO_ROOT=1 to force this script running with current user."
+                exit 13
+            fi
+            ;;
+    esac
+}
+
+check_environment_operating_system() {
+    if [[ -n "$OPERATING_SYSTEM" ]]; then
+        warning "OPERATING_SYSTEM=$OPERATING_SYSTEM is specified, operating system detection will not be performed."
+        return
+    fi
+    if [[ "x$(uname)" == "xLinux" ]]; then
+        OPERATING_SYSTEM=linux
+        return
+    fi
+    error "This script only supports Linux."
+    note "Specify OPERATING_SYSTEM=[linux|darwin|freebsd|windows] to bypass this check and force this script running on this $(uname)."
+    exit 95
+}
+
+check_environment_architecture() {
+    if [[ -n "$ARCHITECTURE" ]]; then
+        warning "ARCHITECTURE=$ARCHITECTURE is specified, architecture detection will not be performed."
+        return
+    fi
+    case "$(uname -m)" in
+        'i386' | 'i686')
+            ARCHITECTURE='386'
+            ;;
+        'amd64' | 'x86_64')
+            ARCHITECTURE='amd64'
+            ;;
+        'armv5tel' | 'armv6l' | 'armv7' | 'armv7l')
+            ARCHITECTURE='arm'
+            ;;
+        'armv8' | 'aarch64')
+            ARCHITECTURE='arm64'
+            ;;
+        'mips' | 'mipsle' | 'mips64' | 'mips64le')
+            ARCHITECTURE='mipsle'
+            ;;
+        's390x')
+            ARCHITECTURE='s390x'
+            ;;
+        *)
+            error "The architecture '$(uname -a)' is not supported."
+            note "Specify ARCHITECTURE=<architecture> to bypass this check and force this script running on this $(uname -m)."
+            exit 8
+            ;;
+    esac
+}
+
+check_environment_systemd() {
+    if [[ -d "/run/systemd/system" ]] || grep -q systemd <(ls -l /sbin/init); then
+        return
+    fi
+    case "$FORCE_NO_SYSTEMD" in
+        '1')
+            warning "FORCE_NO_SYSTEMD=1 is specified, we will process as normal even if systemd is not detected by us."
+            ;;
+        '2')
+            warning "FORCE_NO_SYSTEMD=2 is specified, we will process but all systemd related commands will not be executed."
+            ;;
+        *)
+            error "This script only supports Linux distributions with systemd."
+            note "Specify FORCE_NO_SYSTEMD=1 to disable this check and force this script running as systemd is detected."
+            note "Specify FORCE_NO_SYSTEMD=2 to disable this check along with all systemd related commands."
+            ;;
+    esac
+}
+
+parse_arguments() {
+    while [[ "$#" -gt '0' ]]; do
+        case "$1" in
+            '--remove')
+                if [[ -n "$OPERATION" && "$OPERATION" != 'remove' ]]; then
+                    show_argument_error_and_exit "Option '--remove' is conflicted with other options."
+                fi
+                OPERATION='remove'
+                ;;
+            '--version')
+                VERSION="$2"
+                if [[ -z "$VERSION" ]]; then
+                    show_argument_error_and_exit "Please specify the version for option '--version'."
+                fi
+                shift
+                if ! [[ "$VERSION" == v* ]]; then
+                    show_argument_error_and_exit "Version numbers should begin with 'v' (such like 'v1.3.1'), got '$VERSION'"
+                fi
+                ;;
+            '-h' | '--help')
+                show_usage_and_exit
+                ;;
+            '-l' | '--local')
+                LOCAL_FILE="$2"
+                if [[ -z "$LOCAL_FILE" ]]; then
+                    show_argument_error_and_exit "Please specify the local binary to install for option '-l' or '--local'."
+                fi
+                break
+                ;;
+            *)
+                show_argument_error_and_exit "Unknown option '$1'"
+                ;;
+        esac
+        shift
+    done
+    if [[ -z "$OPERATION" ]]; then
+        OPERATION='install'
+    fi
+
+    # validate arguments
+    case "$OPERATION" in
+        'install')
+            if [[ -n "$VERSION" && -n "$LOCAL_FILE" ]]; then
+                show_argument_error_and_exit '--version and --local cannot be specified together.'
+            fi
+            ;;
+        *)
+            if [[ -n "$VERSION" ]]; then
+                show_argument_error_and_exit "--version is only available when installing."
+            fi
+            if [[ -n "$LOCAL_FILE" ]]; then
+                show_argument_error_and_exit "--local is only available when installing."
+            fi
+            ;;
+    esac
+}
+
+check_hysteria_homedir() {
+    local _default_hysteria_homedir="$1"
+    if [[ -n "$HYSTERIA_HOME_DIR" ]]; then
+        return
+    fi
+    if ! is_user_exists "$HYSTERIA_USER"; then
+        HYSTERIA_HOME_DIR="$_default_hysteria_homedir"
+        return
+    fi
+    HYSTERIA_HOME_DIR="$(eval echo ~"$HYSTERIA_USER")"
+}
+
+download_hysteria() {
+    local _version="$1"
+    local _destination="$2"
+    local _download_url="$REPO_URL/releases/download/v1.3.5/hysteria-$OPERATING_SYSTEM-$ARCHITECTURE"
+    echo "Downloading hysteria archive: $_download_url ..."
+    if ! curl -R -H 'Cache-Control: no-cache' "$_download_url" -o "$_destination"; then
+        error "Download failed! Please check your network and try again."
+        return 11
+    fi
+    return 0
+}
+
+check_hysteria_user() {
+    local _default_hysteria_user="$1"
+    if [[ -n "$HYSTERIA_USER" ]]; then
+        return
+    fi
+    if [[ ! -e "$SYSTEMD_SERVICES_DIR/hysteria-server.service" ]]; then
+        HYSTERIA_USER="$_default_hysteria_user"
+        return
+    fi
+    HYSTERIA_USER="$(grep -o '^User=\w*' "$SYSTEMD_SERVICES_DIR/hysteria-server.service" | tail -1 | cut -d '=' -f 2 || true)"
+    if [[ -z "$HYSTERIA_USER" ]]; then
+        HYSTERIA_USER="$_default_hysteria_user"
+    fi
+}
+
+check_environment_curl() {
+    if ! has_command curl; then
+        install_software "curl"
+    fi
+}
+
+check_environment_grep() {
+    if ! has_command grep; then
+        install_software "grep"
+    fi
+}
+
+check_environment_sqlite3() {
+    if ! has_command sqlite3; then
+        install_software "sqlite3"
+    fi
+}
+
+check_environment_pip() {
+    if ! has_command pip; then
+        install_software "pip"
+    fi
+}
+
+check_environment_jq() {
+    if ! has_command jq; then
+        install_software "jq"
+    fi
+}
+
+check_environment() {
+    check_environment_operating_system
+    check_environment_architecture
+    check_environment_systemd
+    check_environment_curl
+    check_environment_grep
+    check_environment_pip
+    check_environment_sqlite3
+    check_environment_jq
+}
+
+show_usage_and_exit() {
+    echo
+    echo -e "\t$(tbold)$SCRIPT_NAME$(treset) - AGN-UDP server install script"
+    echo
+    echo -e "Usage:"
+    echo
+    echo -e "$(tbold)Install AGN-UDP$(treset)"
+    echo -e "\t$0 [ -f | -l <file> | --version <version> ]"
+    echo -e "Flags:"
+    echo -e "\t-f, --force\tForce re-install latest or specified version even if it has been installed."
+    echo -e "\t-l, --local <file>\tInstall specified AGN-UDP binary instead of download it."
+    echo -e "\t--version <version>\tInstall specified version instead of the latest."
+    echo
+    echo -e "$(tbold)Remove AGN-UDP$(treset)"
+    echo -e "\t$0 --remove"
+    echo
+    echo -e "$(tbold)Check for the update$(treset)"
+    echo -e "\t$0 -c"
+    echo -e "\t$0 --check"
+    echo
+    echo -e "$(tbold)Show this help$(treset)"
+    echo -e "\t$0 -h"
+    echo -e "\t$0 --help"
+    exit 0
+}
+
+tpl_hysteria_server_service_base() {
+    local _config_name="$1"
+    cat << EOF
 [Unit]
 Description=AGN-UDP Service
 After=network.target
@@ -169,236 +445,477 @@ Group=root
 WorkingDirectory=/etc/hysteria
 Environment="PATH=/usr/local/bin/hysteria"
 ExecStart=/usr/local/bin/hysteria server --config /etc/hysteria/config.json
-Restart=always
-RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
 EOF
 }
-tpl_hysteria_server_service(){ tpl_hysteria_server_service_base 'config'; }
-tpl_hysteria_server_x_service(){ tpl_hysteria_server_service_base '%i'; }
 
-# ===== CONFIG JSON — Unlimited Mbps (cap removed) =====
-tpl_etc_hysteria_config_json(){
-  local_users=$(fetch_users)
-  mkdir -p "$CONFIG_DIR"
-  cat > "$CONFIG_FILE" << EOF
+tpl_hysteria_server_service() {
+    tpl_hysteria_server_service_base 'config'
+}
+
+tpl_hysteria_server_x_service() {
+    tpl_hysteria_server_service_base '%i'
+}
+
+tpl_etc_hysteria_config_json() {
+    local_users=$(fetch_users)
+    mkdir -p "$CONFIG_DIR"
+    cat << EOF > "$CONFIG_FILE"
 {
   "server": "$DOMAIN",
   "listen": "$UDP_PORT",
   "protocol": "$PROTOCOL",
   "cert": "/etc/hysteria/hysteria.server.crt",
   "key": "/etc/hysteria/hysteria.server.key",
-  "up_mbps": 0,
-  "down_mbps": 0,
+  "up": "100 Mbps",
+  "up_mbps": 100,
+  "down": "100 Mbps",
+  "down_mbps": 100,
   "disable_udp": false,
   "insecure": true,
   "obfs": "$OBFS",
   "auth": {
     "mode": "passwords",
-    "config": [
-      "$(echo $local_users)"
-    ]
+    "config": [ "$(echo $local_users)" ]
   }
 }
 EOF
 }
 
-# ===== DB =====
-setup_db(){
-  echo "Setting up database"
-  mkdir -p "$(dirname "$USER_DB")"
-  [[ -f "$USER_DB" ]] || sqlite3 "$USER_DB" ".databases" || { echo "DB create failed"; exit 1; }
-  sqlite3 "$USER_DB" <<'SQL'
+setup_db() {
+    echo "Setting up database"
+    mkdir -p "$(dirname "$USER_DB")"
+    if [[ ! -f "$USER_DB" ]]; then
+        # Create the database file
+        sqlite3 "$USER_DB" ".databases"
+        if [[ $? -ne 0 ]]; then
+            echo "Error: Unable to create database file at $USER_DB"
+            exit 1
+        fi
+    fi
+
+    # Create the users table
+    sqlite3 "$USER_DB" <<EOF
 CREATE TABLE IF NOT EXISTS users (
-  username TEXT PRIMARY KEY,
-  password TEXT NOT NULL
+    username TEXT PRIMARY KEY,
+    password TEXT NOT NULL
 );
-SQL
-  local default_username="default" default_password="password"
-  local exists=$(sqlite3 "$USER_DB" "SELECT username FROM users WHERE username='$default_username';")
-  [[ -z "$exists" ]] && sqlite3 "$USER_DB" "INSERT INTO users (username, password) VALUES ('$default_username', '$default_password');" || true
-}
-fetch_users(){
-  DB_PATH="/etc/hysteria/udpusers.db"
-  [[ -f "$DB_PATH" ]] && sqlite3 "$DB_PATH" "SELECT username || ':' || password FROM users;" | paste -sd, - || true
+EOF
+
+    # Check if the table 'users' was created successfully
+    table_exists=$(sqlite3 "$USER_DB" "SELECT name FROM sqlite_master WHERE type='table' AND name='users';")
+    if [[ "$table_exists" == "users" ]]; then
+        echo "Database setup completed successfully. Table 'users' exists."
+        
+        # Add a default user if not already exists
+        default_username="default"
+        default_password="password"
+        user_exists=$(sqlite3 "$USER_DB" "SELECT username FROM users WHERE username='$default_username';")
+        if [[ -z "$user_exists" ]]; then
+            sqlite3 "$USER_DB" "INSERT INTO users (username, password) VALUES ('$default_username', '$default_password');"
+            if [[ $? -eq 0 ]]; then
+                echo "Default user created successfully."
+            else
+                echo "Error: Failed to create default user."
+            fi
+        else
+            echo "Default user already exists."
+        fi
+    else
+        echo "Error: Table 'users' was not created successfully."
+        # Show the database schema for debugging
+        echo "Current database schema:"
+        sqlite3 "$USER_DB" ".schema"
+        exit 1
+    fi
 }
 
-# ===== Install/Remove Binaries & Services =====
-perform_install_hysteria_binary(){
-  if [[ -n "$LOCAL_FILE" ]]; then
-    note "Local install: $LOCAL_FILE"
+fetch_users() {
+    DB_PATH="/etc/hysteria/udpusers.db"
+    if [[ -f "$DB_PATH" ]]; then
+        sqlite3 "$DB_PATH" "SELECT username || ':' || password FROM users;" | paste -sd, -
+    fi
+}
+
+perform_install_hysteria_binary() {
+    if [[ -n "$LOCAL_FILE" ]]; then
+        note "Performing local install: $LOCAL_FILE"
+        echo -ne "Installing hysteria executable ... "
+        if install -Dm755 "$LOCAL_FILE" "$EXECUTABLE_INSTALL_PATH"; then
+            echo "ok"
+        else
+            exit 2
+        fi
+        return
+    fi
+
+    local _tmpfile=$(mktemp)
+    if ! download_hysteria "$VERSION" "$_tmpfile"; then
+        rm -f "$_tmpfile"
+        exit 11
+    fi
+
     echo -ne "Installing hysteria executable ... "
-    install -Dm755 "$LOCAL_FILE" "$EXECUTABLE_INSTALL_PATH" && echo "ok" || exit 2
-    return
-  fi
-  local tmp=$(mktemp)
-  download_hysteria "$VERSION" "$tmp" || { rm -f "$tmp"; exit 11; }
-  echo -ne "Installing hysteria executable ... "
-  install -Dm755 "$tmp" "$EXECUTABLE_INSTALL_PATH" && echo "ok" || exit 13
-  rm -f "$tmp"
-}
-perform_remove_hysteria_binary(){ remove_file "$EXECUTABLE_INSTALL_PATH"; }
-perform_install_hysteria_example_config(){ tpl_etc_hysteria_config_json; }
-
-perform_install_hysteria_systemd(){
-  [[ "x$FORCE_NO_SYSTEMD" == "x2" ]] && return
-  install_content -Dm644 "$(tpl_hysteria_server_service)"   "$SYSTEMD_SERVICES_DIR/hysteria-server.service"
-  install_content -Dm644 "$(tpl_hysteria_server_x_service)" "$SYSTEMD_SERVICES_DIR/hysteria-server@.service"
-  systemctl daemon-reload
-}
-perform_remove_hysteria_systemd(){
-  remove_file "$SYSTEMD_SERVICES_DIR/hysteria-server.service"
-  remove_file "$SYSTEMD_SERVICES_DIR/hysteria-server@.service"
-  systemctl daemon-reload
-}
-perform_install_hysteria_home_legacy(){
-  if ! is_user_exists "$HYSTERIA_USER"; then
-    echo -ne "Creating user $HYSTERIA_USER ... "
-    useradd -r -d "$HYSTERIA_HOME_DIR" -m "$HYSTERIA_USER"; echo "ok"
-  fi
-}
-perform_install_manager_script(){
-  local mgr="/usr/local/bin/jueudp_manager.sh"
-  local link="/usr/local/bin/jueudp"
-  echo "Downloading manager script..."
-  curl -o "$mgr" "https://raw.githubusercontent.com/Juessh/Juevpnscript/main/jueudp_manager.sh"
-  chmod +x "$mgr"
-  ln -sf "$mgr" "$link"
-  echo "Manager installed as 'jueudp'"
+    if install -Dm755 "$_tmpfile" "$EXECUTABLE_INSTAL_PATH"; then
+        echo "ok"
+    else
+        exit 13
+    fi
+    rm -f "$_tmpfile"
 }
 
-is_hysteria_installed(){ [[ -f "$EXECUTABLE_INSTALL_PATH" || -h "$EXECUTABLE_INSTALL_PATH" ]]; }
-get_running_services(){
-  [[ "x$FORCE_NO_SYSTEMD" == "x2" ]] && return
-  systemctl list-units --state=active --plain --no-legend | grep -o "hysteria-server@*[^\s]*.service" || true
-}
-restart_running_services(){
-  [[ "x$FORCE_NO_SYSTEMD" == "x2" ]] && return
-  echo "Restarting running service ..."
-  for s in $(get_running_services); do echo -ne "Restarting $s ... "; systemctl restart "$s"; echo "done"; done
-}
-stop_running_services(){
-  [[ "x$FORCE_NO_SYSTEMD" == "x2" ]] && return
-  echo "Stopping running service ..."
-  for s in $(get_running_services); do echo -ne "Stopping $s ... "; systemctl stop "$s"; echo "done"; done
+perform_remove_hysteria_binary() {
+    remove_file "$EXECUTABLE_INSTALL_PATH"
 }
 
-# ===== SSL (self-signed) =====
-setup_ssl(){
-  echo "Installing SSL certificates"
-  openssl genrsa -out /etc/hysteria/hysteria.ca.key 2048
-  openssl req -new -x509 -days 3650 -key /etc/hysteria/hysteria.ca.key -subj "/C=CN/ST=GD/L=SZ/O=Hysteria, Inc./CN=Hysteria Root CA" -out /etc/hysteria/hysteria.ca.crt
-  openssl req -newkey rsa:2048 -nodes -keyout /etc/hysteria/hysteria.server.key -subj "/C=CN/ST=GD/L=SZ/O=Hysteria, Inc./CN=$DOMAIN" -out /etc/hysteria/hysteria.server.csr
-  openssl x509 -req -extfile <(printf "subjectAltName=DNS:$DOMAIN,DNS:$DOMAIN") -days 3650 -in /etc/hysteria/hysteria.server.csr -CA /etc/hysteria/hysteria.ca.crt -CAkey /etc/hysteria/hysteria.ca.key -CAcreateserial -out /etc/hysteria/hysteria.server.crt
+perform_install_hysteria_example_config() {
+    tpl_etc_hysteria_config_json
 }
 
-# ===== Performance Tuning =====
-apply_sysctl_tuning(){
-  cat >/etc/sysctl.d/99-hysteria-udp.conf <<'SYS'
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.core.rmem_default = 4194304
-net.core.wmem_default = 4194304
-net.core.netdev_max_backlog = 250000
-net.ipv4.udp_rmem_min = 16384
-net.ipv4.udp_wmem_min = 16384
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.ipv4.ip_forward = 1
-SYS
-  sysctl --system
+perform_install_hysteria_systemd() {
+    if [[ "x$FORCE_NO_SYSTEMD" == "x2" ]]; then
+        return
+    fi
+    install_content -Dm644 "$(tpl_hysteria_server_service)" "$SYSTEMD_SERVICES_DIR/hysteria-server.service"
+    install_content -Dm644 "$(tpl_hysteria_server_x_service)" "$SYSTEMD_SERVICES_DIR/hysteria-server@.service"
+    systemctl daemon-reload
 }
 
-start_services(){
-  echo "Starting AGN-UDP (fast path)"
-  systemctl enable hysteria-server.service
-
-  # Detect default iface & parsed listen port
-  IFACE=$(ip -4 route show default | awk '/default/ {print $5; exit}')
-  LPORT=$(echo "$UDP_PORT" | sed 's/^://')   # ":36712" -> "36712"
-
-  # Apply kernel tuning
-  apply_sysctl_tuning
-
-  # Optional: MTU alignment (uncomment to try)
-  # ip link set dev "$IFACE" mtu 1380 || true
-
-  # Clean any previous wide-range rules
-  iptables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 10000:65000 -j DNAT --to-destination ":$LPORT" 2>/dev/null || true
-  ip6tables -t nat -D PREROUTING -i "$IFACE" -p udp --dport 10000:65000 -j DNAT --to-destination ":$LPORT" 2>/dev/null || true
-
-  # Short-range DNAT similar to zivpn
-  iptables -t nat -C PREROUTING -i "$IFACE" -p udp --dport 12000:12999 -j DNAT --to-destination ":$LPORT" 2>/dev/null \
-    || iptables -t nat -A PREROUTING -i "$IFACE" -p udp --dport 12000:12999 -j DNAT --to-destination ":$LPORT"
-
-  # Open firewall if ufw exists (optional)
-  if command -v ufw >/dev/null 2>&1; then
-    ufw allow 12000:12999/udp || true
-    ufw allow "$LPORT"/udp || true
-  fi
-
-  # Relax rp_filter only on the default iface (not global)
-  sysctl "net.ipv4.conf.$IFACE.rp_filter=0"
-
-  # Optional: skip conntrack for hysteria port (set USE_NOTRACK=1 when running)
-  if [[ "$USE_NOTRACK" == "1" ]]; then
-    iptables -t raw -C PREROUTING -p udp --dport "$LPORT" -j NOTRACK 2>/dev/null || \
-      iptables -t raw -A PREROUTING -p udp --dport "$LPORT" -j NOTRACK
-    iptables -t raw -C OUTPUT -p udp --sport "$LPORT" -j NOTRACK 2>/dev/null || \
-      iptables -t raw -A OUTPUT -p udp --sport "$LPORT" -j NOTRACK
-  fi
-
-  # Start service
-  systemctl restart hysteria-server.service
-  echo "AGN-UDP started on UDP :$LPORT (DNAT 12000:12999 → :$LPORT)"
+perform_remove_hysteria_systemd() {
+    remove_file "$SYSTEMD_SERVICES_DIR/hysteria-server.service"
+    remove_file "$SYSTEMD_SERVICES_DIR/hysteria-server@.service"
+    systemctl daemon-reload
 }
 
-# ===== Orchestration =====
-perform_install(){
-  local fresh=""
-  if ! is_hysteria_installed; then fresh=1; fi
+perform_install_hysteria_home_legacy() {
+    if ! is_user_exists "$HYSTERIA_USER"; then
+        echo -ne "Creating user $HYSTERIA_USER ... "
+        useradd -r -d "$HYSTERIA_HOME_DIR" -m "$HYSTERIA_USER"
+        echo "ok"
+    fi
+}
 
-  perform_install_hysteria_binary
-  perform_install_hysteria_example_config
-  perform_install_hysteria_home_legacy
-  perform_install_hysteria_systemd
-  setup_ssl
-  start_services
-  perform_install_manager_script
+perform_install_manager_script() {
+    local _manager_script="/usr/local/bin/jueudp_manager.sh"
+    local _symlink_path="/usr/local/bin/jueudp"
+    
+    echo "Downloading manager script..."
+    curl -o "$_manager_script" "https://raw.githubusercontent.com/Juessh/Juevpnscript/main/jueudp_manager.sh"
+    chmod +x "$_manager_script"
+    
+    echo "Creating symbolic link to run the manager script using 'jueudp' command..."
+    ln -sf "$_manager_script" "$_symlink_path"
+    
+    echo "Manager script installed at $_manager_script"
+    echo "You can now run the manager using the 'jueudp' command."
+}
 
-  if [[ -n "$fresh" ]]; then
-    echo
-    echo -e "$(tbold)JUE-UDP installed successfully.$(treset)"
-    echo "Use 'jueudp' to open manager."
-  else
-    restart_running_services
+setup_web_dashboard() {
+    echo "Setting up web dashboard for real-time monitoring..."
+    
+    # Install required packages
+    install_software "nginx"
+    install_software "php-fpm"
+    install_software "php-sqlite3"
+    
+    # Create web directory
+    local web_dir="/var/www/udp-dashboard"
+    mkdir -p "$web_dir"
+    
+    # Create PHP dashboard
+    cat > "$web_dir/index.php" << 'EOF'
+<?php
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+
+$db_path = '/etc/hysteria/udpusers.db';
+$online_users = [];
+
+if (file_exists($db_path)) {
+    try {
+        $db = new SQLite3($db_path);
+        
+        // Get online users - this is a simplified example
+        // You might need to implement actual connection tracking
+        $result = $db->query("SELECT username FROM users");
+        
+        while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
+            $online_users[] = $row['username'];
+        }
+    } catch (Exception $e) {
+        error_log("Database error: " . $e->getMessage());
+    }
+}
+
+echo json_encode([
+    'status' => 'success',
+    'online_users' => $online_users,
+    'total_online' => count($online_users),
+    'server_status' => 'running'
+]);
+?>
+EOF
+
+    # Create a more detailed dashboard with HTML interface
+    cat > "$web_dir/dashboard.php" << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UDP Server Status</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .status-card { background: #f5f5f5; padding: 20px; border-radius: 5px; margin: 10px 0; }
+        .online { color: green; }
+        .offline { color: red; }
+    </style>
+</head>
+<body>
+    <h1>UDP Server Real-time Status</h1>
+    <div id="status"></div>
+    
+    <script>
+        function updateStatus() {
+            fetch('/status.php')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('status').innerHTML = `
+                        <div class="status-card">
+                            <h2>Server Status: <span class="${data.server_status === 'running' ? 'online' : 'offline'}">${data.server_status}</span></h2>
+                            <p>Total Online Users: <strong>${data.total_online}</strong></p>
+                            <h3>Online Users:</h3>
+                            <ul>
+                                ${data.online_users.map(user => `<li>${user}</li>`).join('')}
+                            </ul>
+                        </div>
+                    `;
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    document.getElementById('status').innerHTML = '<div class="status-card offline">Error fetching status</div>';
+                });
+        }
+        
+        // Update every 5 seconds
+        setInterval(updateStatus, 5000);
+        updateStatus();
+    </script>
+</body>
+</html>
+EOF
+
+    # Create nginx configuration
+    cat > "/etc/nginx/sites-available/udp-dashboard" << EOF
+server {
+    listen $WEB_DASHBOARD_PORT;
+    server_name _;
+    root /var/www/udp-dashboard;
+    index index.php index.html;
+    
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+    
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+    }
+    
+    location /udp/server/online {
+        try_files \$uri /dashboard.php;
+    }
+    
+    location /status.php {
+        try_files \$uri /index.php;
+    }
+}
+EOF
+
+    # Enable site
+    ln -sf "/etc/nginx/sites-available/udp-dashboard" "/etc/nginx/sites-enabled/"
+    
+    # Remove default nginx site
+    rm -f /etc/nginx/sites-enabled/default
+    
+    # Restart services
+    systemctl enable nginx
+    systemctl enable php7.4-fpm || systemctl enable php8.0-fpm || systemctl enable php8.1-fpm || systemctl enable php8.2-fpm
+    systemctl restart nginx
+    systemctl restart php7.4-fpm || systemctl restart php8.0-fpm || systemctl restart php8.1-fpm || systemctl restart php8.2-fpm
+    
+    # Get server IP
+    SERVER_IP=$(curl -s ifconfig.me || hostname -I | awk '{print $1}')
+    
+    echo "Web dashboard installed successfully!"
+    echo "Access your dashboard at: http://$SERVER_IP:$WEB_DASHBOARD_PORT/udp/server/online"
+    echo "JSON API available at: http://$SERVER_IP:$WEB_DASHBOARD_PORT/status.php"
+}
+
+is_hysteria_installed() {
+    # RETURN VALUE
+    # 0: hysteria is installed
+    # 1: hysteria is not installed
+    if [[ -f "$EXECUTABLE_INSTALL_PATH" || -h "$EXECUTABLE_INSTALL_PATH" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+get_running_services() {
+    if [[ "x$FORCE_NO_SYSTEMD" == "x2" ]]; then
+        return
+    fi
+    systemctl list-units --state=active --plain --no-legend \
+        | grep -o "hysteria-server@*[^\s]*.service" || true
+}
+
+restart_running_services() {
+    if [[ "x$FORCE_NO_SYSTEMD" == "x2" ]]; then
+        return
+    fi
+    echo "Restarting running service ... "
+    for service in $(get_running_services); do
+        echo -ne "Restarting $service ... "
+        systemctl restart "$service"
+        echo "done"
+    done
+}
+
+stop_running_services() {
+    if [[ "x$FORCE_NO_SYSTEMD" == "x2" ]]; then
+        return
+    fi
+    echo "Stopping running service ... "
+    for service in $(get_running_services); do
+        echo -ne "Stopping $service ... "
+        systemctl stop "$service"
+        echo "done"
+    done
+}
+
+perform_install() {
+    local _is_fresh_install
+    if ! is_hysteria_installed; then
+        _is_fresh_install=1
+    fi
+    
+    perform_install_hysteria_binary
+    perform_install_hysteria_example_config
+    perform_install_hysteria_home_legacy
+    perform_install_hysteria_systemd
+    setup_ssl
     start_services
+    perform_install_manager_script
+    setup_web_dashboard
+    
+    if [[ -n "$_is_fresh_install" ]]; then
+        echo
+        echo -e "$(tbold)Congratulations! JUE-UDP has been successfully installed on your server.$(treset)"
+        echo "Use 'jueudp' command to access the manager."
+        echo
+        echo -e "$(tbold)Client app Jaidee VPN:$(treset)"
+        echo -e "$(tblue)https://play.google.com/store/apps/details?id=com.jaideevpn.net$(treset)"
+        echo
+        echo -e "Follow me!"
+        echo
+        echo -e "\t+ Check out my website at $(tblue)https://t.me/jaideevpn$(treset)"
+        echo -e "\t+ Follow me on Telegram: $(tblue)https://t.me/Pussy1990$(treset)"
+        echo -e "\t+ Follow me on Facebook: $(tblue)https://www.facebook.com/juehtet2025$(treset)"
+        echo
+    else
+        restart_running_services
+        start_services
+        echo
+        echo -e "$(tbold)JUE-UDP has been successfully updated to $VERSION.$(treset)"
+        echo
+    fi
+}
+
+perform_remove() {
+    perform_remove_hysteria_binary
+    stop_running_services
+    perform_remove_hysteria_systemd
+    
+    # Remove web dashboard
+    rm -rf /var/www/udp-dashboard
+    rm -f /etc/nginx/sites-available/udp-dashboard
+    rm -f /etc/nginx/sites-enabled/udp-dashboard
+    
     echo
-    echo -e "$(tbold)JUE-UDP updated.$(treset)"
-  fi
+    echo -e "$(tbold)Congratulations! AGN-UDP has been successfully removed from your server.$(treset)"
+    echo
+    echo -e "You still need to remove configuration files and ACME certificates manually with the following commands:"
+    echo
+    echo -e "\t$(tred)rm -rf "$CONFIG_DIR"$(treset)"
+    if [[ "x$HYSTERIA_USER" != "xroot" ]]; then
+        echo -e "\t$(tred)userdel -r "$HYSTERIA_USER"$(treset)"
+    fi
+    if [[ "x$FORCE_NO_SYSTEMD" != "x2" ]]; then
+        echo
+        echo -e "You still might need to disable all related systemd services with the following commands:"
+        echo
+        echo -e "\t$(tred)rm -f /etc/systemd/system/multi-user.target.wants/hysteria-server.service$(treset)"
+        echo -e "\t$(tred)rm -f /etc/systemd/system/multi-user.target.wants/hysteria-server@*.service$(treset)"
+        echo -e "\t$(tred)systemctl daemon-reload$(treset)"
+    fi
+    echo
 }
 
-perform_remove(){
-  perform_remove_hysteria_binary
-  stop_running_services
-  perform_remove_hysteria_systemd
-  echo
-  echo -e "$(tbold)AGN-UDP removed.$(treset)"
-  echo -e "Remove configs manually: $(tred)rm -rf $CONFIG_DIR$(treset)"
+setup_ssl() {
+    echo "Installing SSL certificates"
+    openssl genrsa -out /etc/hysteria/hysteria.ca.key 2048
+    openssl req -new -x509 -days 3650 -key /etc/hysteria/hysteria.ca.key -subj "/C=CN/ST=GD/L=SZ/O=Hysteria, Inc./CN=Hysteria Root CA" -out /etc/hysteria/hysteria.ca.crt
+    openssl req -newkey rsa:2048 -nodes -keyout /etc/hysteria/hysteria.server.key -subj "/C=CN/ST=GD/L=SZ/O=Hysteria, Inc./CN=$DOMAIN" -out /etc/hysteria/hysteria.server.csr
+    openssl x509 -req -extfile <(printf "subjectAltName=DNS:$DOMAIN,DNS:$DOMAIN") -days 3650 -in /etc/hysteria/hysteria.server.csr -CA /etc/hysteria/hysteria.ca.crt -CAkey /etc/hysteria/hysteria.ca.key -CAcreateserial -out /etc/hysteria/hysteria.server.crt
 }
 
-main(){
-  parse_arguments "$@"
-  check_permission
-  check_environment
-  check_hysteria_user "hysteria"
-  check_hysteria_homedir "/var/lib/$HYSTERIA_USER"
-  case "$OPERATION" in
-    install) setup_db; perform_install;;
-    remove) perform_remove;;
-    *) error "Unknown operation '$OPERATION'.";;
-  esac
+start_services() {
+    echo "Starting AGN-UDP"
+    apt update
+    sudo debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v4 boolean true"
+    sudo debconf-set-selections <<< "iptables-persistent iptables-persistent/autosave_v6 boolean true"
+    apt -y install iptables-persistent
+    
+    iptables -t nat -A PREROUTING -i $(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1) -p udp --dport 10000:65000 -j DNAT --to-destination $UDP_PORT
+    ip6tables -t nat -A PREROUTING -i $(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1) -p udp --dport 10000:65000 -j DNAT --to-destination $UDP_PORT
+    
+    sysctl net.ipv4.conf.all.rp_filter=0
+    sysctl net.ipv4.conf.$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1).rp_filter=0
+    
+    echo "net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.$(ip -4 route ls | grep default | grep -Po '(?<=dev )(\S+)' | head -1).rp_filter=0" > /etc/sysctl.conf
+    
+    sysctl -p
+    sudo iptables-save > /etc/iptables/rules.v4
+    sudo ip6tables-save > /etc/iptables/rules.v6
+    
+    systemctl enable hysteria-server.service
+    systemctl start hysteria-server.service
 }
+
+main() {
+    parse_arguments "$@"
+    check_permission
+    check_environment
+    check_hysteria_user "hysteria"
+    check_hysteria_homedir "/var/lib/$HYSTERIA_USER"
+    
+    case "$OPERATION" in
+        "install")
+            setup_db
+            perform_install
+            ;;
+        "remove")
+            perform_remove
+            ;;
+        *)
+            error "Unknown operation '$OPERATION'."
+            ;;
+    esac
+}
+
 main "$@"
